@@ -11,5 +11,7 @@
   "emmet.extensionsPath": [
     "1",
     "1"
-  ]
+],
+"git.ignoreLimitWarning": true,
+"remote.autoForwardPortsFallback": 0
 }

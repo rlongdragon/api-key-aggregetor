@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { ApiKey } from "./types/ApiKey";
 import { ApiKeyStatus } from "./types/ApiKeyStatus";
+import { ProxyServer, ProxyAssignment } from "./types/Proxy";
 import { ApiKeysTable } from "./components/ApiKeysTable";
+import { ProxyManager } from "./components/ProxyManager";
 
 declare const acquireVsCodeApi: () => {
   postMessage: (message: any) => void;
@@ -9,12 +11,15 @@ declare const acquireVsCodeApi: () => {
   setState: (state: any) => void;
 };
 
-const vscode = acquireVsCodeApi(); // 獲取 VS Code API 實例
+const vscode = acquireVsCodeApi();
 
 function App() {
   const [apiKeys, setApiKeys] = useState<ApiKeyStatus[]>([]);
   const [keysStatus, setKeysStatus] = useState<{[key: string]: string;}>();
   const [isLoading, setIsLoading] = useState(true);
+  const [proxies, setProxies] = useState<ProxyServer[]>([]);
+  const [proxyAssignments, setProxyAssignments] = useState<ProxyAssignment[]>([]);
+  const [isRotatingProxy, setIsRotatingProxy] = useState(false);
 
   useEffect(() => {
     console.log("keystatus:", keysStatus);
@@ -23,6 +28,15 @@ function App() {
   useEffect(() => {
     vscode.postMessage({
       command: "getApiKeys(request)",
+    });
+    vscode.postMessage({
+      command: "getProxies(request)",
+    });
+    vscode.postMessage({
+      command: "getProxyAssignments(request)",
+    });
+    vscode.postMessage({
+      command: "getRotatingProxyStatus(request)",
     });
   }, []);
 
@@ -117,6 +131,21 @@ function App() {
 
           console.log("處理請求狀態更新")
           break;
+        case "getProxies(response)":
+          setProxies(message.proxies || []);
+          break;
+        case "getProxyAssignments(response)":
+          setProxyAssignments(message.assignments || []);
+          break;
+        case "getRotatingProxyStatus(response)":
+          setIsRotatingProxy(message.isRotatingProxy || false);
+          break;
+        case "proxyAssignmentUpdate":
+          setProxyAssignments(message.assignments || []);
+          break;
+        case "proxyPoolUpdate":
+          setProxies(message.proxies || []);
+          break;
         default:
           console.warn("Unhandled message from VS Code:", message);
           break;
@@ -131,15 +160,138 @@ function App() {
     };
   }, []);
 
+  // Proxy management handlers
+  const handleAddProxy = async (url: string): Promise<void> => {
+    vscode.postMessage({
+      command: "addProxy",
+      url: url,
+    });
+  };
+
+  const handleUpdateProxy = async (id: string, url: string): Promise<void> => {
+    vscode.postMessage({
+      command: "updateProxy",
+      id: id,
+      url: url,
+    });
+  };
+
+  const handleRemoveProxy = async (id: string): Promise<void> => {
+    vscode.postMessage({
+      command: "removeProxy",
+      id: id,
+    });
+  };
+
+  const handleRebalanceProxies = async (): Promise<void> => {
+    vscode.postMessage({
+      command: "rebalanceProxies",
+    });
+  };
+
+  const handleRotatingProxyChange = (isRotating: boolean) => {
+    setIsRotatingProxy(isRotating);
+    vscode.postMessage({
+      command: "updateRotatingProxy",
+      isRotatingProxy: isRotating,
+    });
+  };
+
+  const handleProxyChange = (keyId: string, proxyId: string | null, isManual: boolean) => {
+    vscode.postMessage({
+      command: "updateApiKeyProxyAssignment",
+      keyId: keyId,
+      proxyId: proxyId,
+      isManual: isManual,
+    });
+  };
+
   return (
-    <div>
-      <h1>API Key Aggregator Manage Panel</h1>
-      <h2>API Keys</h2>
-      {isLoading ? (
-        <p>Loading API keys...</p>
-      ) : (
-        <ApiKeysTable keys={apiKeys} status={keysStatus ?? {}}/>
-      )}
+    <div style={{ padding: '20px', fontFamily: 'var(--vscode-font-family)' }}>
+      <header style={{ marginBottom: '30px', borderBottom: '1px solid var(--vscode-panel-border)', paddingBottom: '15px' }}>
+        <h1 style={{ margin: '0 0 10px 0', color: 'var(--vscode-foreground)' }}>
+          🔑 Gemini API Key Aggregator
+        </h1>
+        <p style={{ margin: 0, color: 'var(--vscode-descriptionForeground)', fontSize: '14px' }}>
+          Manage your API keys and proxy assignments for optimal performance and rate limit distribution
+        </p>
+      </header>
+
+      <ProxyManager 
+        proxies={proxies}
+        proxyAssignments={proxyAssignments}
+        onAddProxy={handleAddProxy}
+        onUpdateProxy={handleUpdateProxy}
+        onRemoveProxy={handleRemoveProxy}
+        onRebalanceProxies={handleRebalanceProxies}
+        isRotatingProxy={isRotatingProxy}
+        onRotatingProxyChange={handleRotatingProxyChange}
+      />
+      
+      <section style={{ marginTop: '30px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '15px' }}>
+          <h2 style={{ margin: 0, color: 'var(--vscode-foreground)' }}>API Keys & Proxy Assignments</h2>
+          <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }}>
+            {apiKeys.length} key{apiKeys.length !== 1 ? 's' : ''} configured
+          </div>
+        </div>
+        
+        {isLoading ? (
+          <div style={{ 
+            textAlign: 'center', 
+            padding: '40px', 
+            color: 'var(--vscode-descriptionForeground)' 
+          }}>
+            <div>Loading API keys...</div>
+            <div style={{ fontSize: '12px', marginTop: '5px' }}>
+              Please wait while we fetch your configuration
+            </div>
+          </div>
+        ) : apiKeys.length === 0 ? (
+          <div style={{ 
+            textAlign: 'center', 
+            padding: '40px',
+            border: '1px dashed var(--vscode-panel-border)',
+            borderRadius: '4px',
+            backgroundColor: 'var(--vscode-editor-inactiveSelectionBackground)'
+          }}>
+            <div style={{ fontSize: '16px', marginBottom: '10px' }}>🔑 No API Keys Configured</div>
+            <div style={{ color: 'var(--vscode-descriptionForeground)', marginBottom: '15px' }}>
+              Add your first Gemini API key to get started
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }}>
+              Use Command Palette: <code>Ctrl+Shift+P</code> → <code>Gemini: Add API Key</code>
+            </div>
+          </div>
+        ) : (
+          <>
+            <ApiKeysTable
+              keys={apiKeys}
+              status={keysStatus ?? {}}
+              proxies={proxies}
+              proxyAssignments={proxyAssignments}
+              onProxyChange={handleProxyChange}
+            />
+            
+            <div style={{ 
+              marginTop: '15px', 
+              padding: '10px', 
+              backgroundColor: 'var(--vscode-editor-inactiveSelectionBackground)',
+              borderRadius: '4px',
+              fontSize: '12px',
+              color: 'var(--vscode-descriptionForeground)'
+            }}>
+              <strong>💡 Tips:</strong>
+              <ul style={{ margin: '5px 0', paddingLeft: '20px' }}>
+                <li>Each API key automatically gets its own dedicated proxy for better performance</li>
+                <li>Use the dropdown to manually reassign proxies if needed</li>
+                <li>Monitor proxy status and error rates in the Proxy Management section above</li>
+                <li>Click "Rebalance Proxy Assignments" to optimize distribution</li>
+              </ul>
+            </div>
+          </>
+        )}
+      </section>
     </div>
   );
 }

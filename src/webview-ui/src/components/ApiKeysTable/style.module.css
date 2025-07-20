@@ -1,49 +1,193 @@
 .apiKeysTable {
   width: 100%;
   border-collapse: collapse;
+  margin-bottom: 20px;
 }
 
 .apiKeysTable th,
 .apiKeysTable td {
-  padding: 8px;
+  padding: 8px 12px;
   text-align: left;
-  border-bottom: 1px solid currentColor;
+  border-bottom: 1px solid var(--vscode-panel-border);
 }
 
 .apiKeysTable th {
-  background-color: #0a0a0a27;
+  background-color: var(--vscode-editor-inactiveSelectionBackground);
+  font-weight: bold;
+  cursor: help;
+  position: relative;
 }
 
 .scanner {
-  /* 1. 設定最底層的背景顏色 */
-  /* background-color: #85858569; */
-
-  /* 2. 設定上層的漸層光束作為背景圖 */
-  background-image: linear-gradient(to right,
-      transparent 0%,
-      rgba(0, 255, 0, 0.301) 50%,
-      transparent 100%);
-
-  /* 3. 確保光束不重複 */
-  background-repeat: no-repeat;
-
-  /* 4. 設定光束的大小 (寬度為容器的 20%) */
-  background-size: 20% 100%;
-
-  /* 5. 應用下面定義的動畫 */
-  animation: single-scan 1.7s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation: scanning 1.5s infinite;
 }
 
-/* 定義動畫：移動背景位置 */
-@keyframes single-scan {
-
-  /* 開始時，光束在容器左側外面 */
+@keyframes scanning {
   0% {
-    background-position: -30% 0;
+    background-color: transparent;
   }
-
-  /* 結束時，光束移動到容器右側外面 */
+  50% {
+    background-color: rgba(100, 100, 255, 0.1);
+  }
   100% {
-    background-position: 130% 0;
+    background-color: transparent;
   }
+}
+
+.manualAssignment {
+  border: 1px solid var(--vscode-focusBorder);
+}
+
+.assignmentInfo {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.assignmentInfo span {
+  cursor: help;
+}
+
+.apiKeysTable th:hover {
+  background-color: var(--vscode-list-hoverBackground);
+}
+
+.apiKeysTable select {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--vscode-input-border);
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.apiKeysTable select:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.apiKeysTable select option {
+  padding: 4px 8px;
+}
+
+.directConnection {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.tableHeader {
+  margin-bottom: 15px;
+}
+
+.tableHeader h3 {
+  margin: 0 0 8px 0;
+  color: var(--vscode-foreground);
+}
+
+.tableHelpText {
+  font-size: 13px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.tableFooter {
+  margin-top: 15px;
+  padding: 15px;
+  background-color: var(--vscode-editor-inactiveSelectionBackground);
+  border-radius: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.assignmentLegend h5,
+.statusLegend h5 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--vscode-foreground);
+}
+
+.legendItems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.manualIcon,
+.autoIcon,
+.directIcon {
+  font-size: 12px;
+}
+
+.statusAvailable {
+  color: #4CAF50;
+}
+
+.statusCooling {
+  color: #FF9800;
+}
+
+.statusDisabled {
+  color: #757575;
+}
+
+.emptyState {
+  text-align: center;
+  padding: 40px 20px;
+  background-color: var(--vscode-editor-inactiveSelectionBackground);
+  border-radius: 8px;
+  margin: 20px 0;
+}
+
+.emptyState h4 {
+  margin: 0 0 15px 0;
+  color: var(--vscode-foreground);
+}
+
+.emptyState p {
+  margin: 0 0 15px 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+.emptyState ol {
+  text-align: left;
+  display: inline-block;
+  margin: 0 0 15px 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+.emptyState ol li {
+  margin-bottom: 5px;
+}
+
+.helpNote {
+  padding: 10px;
+  background-color: var(--vscode-textBlockQuote-background);
+  border-left: 3px solid var(--vscode-textBlockQuote-border);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.helpNote a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+
+.helpNote a:hover {
+  text-decoration: underline;
 }

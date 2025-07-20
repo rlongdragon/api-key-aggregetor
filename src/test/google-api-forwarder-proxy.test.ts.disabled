@@ -1,0 +1,163 @@
+import * as assert from 'assert';
+import GoogleApiForwarder, { GoogleApiError } from '../server/core/GoogleApiForwarder';
+import { ApiKey } from '../server/types/ApiKey';
+
+// Mock the GoogleGenerativeAI class and its methods
+jest.mock('@google/generative-ai', () => {
+  return {
+    GoogleGenerativeAI: jest.fn().mockImplementation(() => {
+      return {
+        getGenerativeModel: jest.fn().mockImplementation(() => {
+          return {
+            generateContent: jest.fn().mockImplementation(async () => {
+              return {
+                response: { text: 'Mock response' }
+              };
+            }),
+            generateContentStream: jest.fn().mockImplementation(async () => {
+              return {
+                stream: (async function* () {
+                  yield { text: 'Mock stream response' };
+                })()
+              };
+            }),
+            requestOptions: {}
+          };
+        })
+      };
+    })
+  };
+});
+
+describe('GoogleApiForwarder with Enhanced Proxy Handling', () => {
+  let forwarder: GoogleApiForwarder;
+  
+  beforeEach(() => {
+    forwarder = new GoogleApiForwarder();
+    jest.clearAllMocks();
+  });
+  
+  describe('proxy agent creation', () => {
+    it('should create HttpsProxyAgent for http/https proxies', async () => {
+      const apiKey: ApiKey = {
+        key: 'test_key',
+        keyId: 'key1',
+        status: 'available',
+        currentRequests: 0,
+        proxy: 'http://proxy.example.com:8080'
+      };
+      
+      // Access the private method using any type
+      const createProxyAgent = (forwarder as any).createProxyAgent.bind(forwarder);
+      const agent = createProxyAgent('http://proxy.example.com:8080');
+      
+      assert.ok(agent, 'Should create a proxy agent');
+      assert.strictEqual(agent.constructor.name, 'HttpsProxyAgent', 'Should create HttpsProxyAgent');
+    });
+    
+    it('should create SocksProxyAgent for socks proxies', async () => {
+      // Access the private method using any type
+      const createProxyAgent = (forwarder as any).createProxyAgent.bind(forwarder);
+      const agent = createProxyAgent('socks5://proxy.example.com:1080');
+      
+      assert.ok(agent, 'Should create a proxy agent');
+      assert.strictEqual(agent.constructor.name, 'SocksProxyAgent', 'Should create SocksProxyAgent');
+    });
+    
+    it('should return undefined for invalid proxy URLs', async () => {
+      // Access the private method using any type
+      const createProxyAgent = (forwarder as any).createProxyAgent.bind(forwarder);
+      const agent = createProxyAgent('invalid-url');
+      
+      assert.strictEqual(agent, undefined, 'Should return undefined for invalid URL');
+    });
+  });
+  
+  describe('proxy error detection', () => {
+    it('should detect common proxy errors', async () => {
+      // Access the private method using any type
+      const isProxyError = (forwarder as any).isProxyError.bind(forwarder);
+      
+      assert.strictEqual(isProxyError(new Error('ECONNREFUSED')), true, 'Should detect ECONNREFUSED');
+      assert.strictEqual(isProxyError(new Error('ETIMEDOUT')), true, 'Should detect ETIMEDOUT');
+      assert.strictEqual(isProxyError(new Error('socket hang up')), true, 'Should detect socket hang up');
+      assert.strictEqual(isProxyError(new Error('proxy authentication required')), true, 'Should detect proxy auth');
+      assert.strictEqual(isProxyError(new Error('certificate has expired')), true, 'Should detect cert expired');
+      
+      assert.strictEqual(isProxyError(new Error('Some other error')), false, 'Should not detect non-proxy error');
+      assert.strictEqual(isProxyError(null), false, 'Should handle null error');
+    });
+  });
+  
+  describe('request forwarding with proxy', () => {
+    it('should include proxy information in error when proxy fails', async () => {
+      const apiKey: ApiKey = {
+        key: 'test_key',
+        keyId: 'key1',
+        status: 'available',
+        currentRequests: 0,
+        proxy: 'http://proxy.example.com:8080'
+      };
+      
+      // Mock the generateContent method to throw a proxy error
+      const GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI;
+      const mockGenerateContent = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      
+      GoogleGenerativeAI().getGenerativeModel().generateContent = mockGenerateContent;
+      
+      const result = await forwarder.forwardRequest('gemini-pro', 'generateContent', {}, apiKey);
+      
+      assert.ok(result.error, 'Should return an error');
+      assert.strictEqual(result.error?.isProxyError, true, 'Should mark as proxy error');
+      assert.strictEqual(result.error?.proxyUrl, apiKey.proxy, 'Should include proxy URL in error');
+    });
+    
+    it('should retry without proxy when proxy fails', async () => {
+      const apiKey: ApiKey = {
+        key: 'test_key',
+        keyId: 'key1',
+        status: 'available',
+        currentRequests: 0,
+        proxy: 'http://proxy.example.com:8080'
+      };
+      
+      // Mock the generateContent method to throw a proxy error on first call
+      // and succeed on second call (retry without proxy)
+      const GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI;
+      const mockGenerateContent = jest.fn()
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockResolvedValueOnce({ response: { text: 'Success after retry' } });
+      
+      GoogleGenerativeAI().getGenerativeModel().generateContent = mockGenerateContent;
+      
+      const result = await forwarder.forwardRequest('gemini-pro', 'generateContent', {}, apiKey);
+      
+      assert.ok(result.response, 'Should return a response after retry');
+      assert.strictEqual(mockGenerateContent.mock.calls.length, 2, 'Should call generateContent twice');
+    });
+    
+    it('should respect maxProxyRetries setting', async () => {
+      const apiKey: ApiKey = {
+        key: 'test_key',
+        keyId: 'key1',
+        status: 'available',
+        currentRequests: 0,
+        proxy: 'http://proxy.example.com:8080'
+      };
+      
+      // Set max retries to 0
+      forwarder.setMaxProxyRetries(0);
+      
+      // Mock the generateContent method to throw a proxy error
+      const GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI;
+      const mockGenerateContent = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      
+      GoogleGenerativeAI().getGenerativeModel().generateContent = mockGenerateContent;
+      
+      const result = await forwarder.forwardRequest('gemini-pro', 'generateContent', {}, apiKey);
+      
+      assert.ok(result.error, 'Should return an error');
+      assert.strictEqual(mockGenerateContent.mock.calls.length, 1, 'Should not retry when maxProxyRetries is 0');
+    });
+  });
+});

@@ -16,10 +16,78 @@ import { StreamHandler } from './server/core/StreamHandler'; // Import StreamHan
 import { logger, loggerMiddleware } from "./server/middlewares/logger"; // 引入 logger 和 loggerMiddleware
 import { eventManager, RequestStatus } from "./server/core/EventManager"; // 引入 eventManager 和 RequestStatus
 import { ApiKey } from "./server/types/ApiKey"; // 引入 ApiKey 介面
+import { ProxyPoolManager } from "./server/core/ProxyPoolManager"; // Import ProxyPoolManager
+import { ProxyAssignmentManager } from "./server/core/ProxyAssignmentManager"; // Import ProxyAssignmentManager
+import { ProxyLoadBalancer } from "./server/core/ProxyLoadBalancer"; // Import ProxyLoadBalancer
+import { ProxyConfigurationManager } from "./server/core/ProxyConfigurationManager"; // Import ProxyConfigurationManager
+import { ProxyErrorHandler } from "./server/core/ProxyErrorHandler"; // Import ProxyErrorHandler
+import { MigrationManager } from "./server/core/MigrationManager"; // Import MigrationManager
+import { RotatingProxyHealthMonitor } from "./server/core/RotatingProxyHealthMonitor"; // Import RotatingProxyHealthMonitor
+import { rotatingProxyUIService } from "./ui/core/RotatingProxyUIService"; // Import RotatingProxyUIService
+import { ProxyPerformanceMonitor } from "./server/core/ProxyPerformanceMonitor"; // Import ProxyPerformanceMonitor
+
+// Import native UI components
+import { ApiKeyTreeProvider } from './ui/providers/ApiKeyTreeProvider';
+import { ProxyTreeProvider } from './ui/providers/ProxyTreeProvider';
+import { ApiKeyCommands } from './ui/commands/ApiKeyCommands';
+import { ProxyCommands } from './ui/commands/ProxyCommands';
+import { ServerCommands } from './ui/commands/ServerCommands';
+import { 
+  statusBarManager, 
+  systemMonitor, 
+  createCoreIntegrationService,
+  disposalManager
+} from './ui/core';
 
 let server: http.Server | undefined; // Declare server variable to manage its lifecycle
 let apiKeyManager: ApiKeyManager; // Declare apiKeyManager variable to be accessible in commands
 let webviewPanel: vscode.WebviewPanel | undefined; // 新增：保存 webviewPanel 引用
+let proxyPoolManager: ProxyPoolManager | undefined; // Declare proxy pool manager for cleanup
+
+// Native UI components
+let apiKeyTreeProvider: ApiKeyTreeProvider | undefined;
+let proxyTreeProvider: ProxyTreeProvider | undefined;
+let coreIntegrationService: any;
+let apiKeyCommands: ApiKeyCommands | undefined;
+let proxyCommands: ProxyCommands | undefined;
+let serverCommands: ServerCommands | undefined;
+
+/**
+ * Load proxies from environment variables if rotating proxy is not configured
+ */
+async function loadProxiesFromEnvironment(proxyPoolManager: ProxyPoolManager): Promise<void> {
+	// Check if rotating proxy is configured
+	if (config.USE_ROTATING_PROXY && config.ROTATING_PROXY) {
+		console.log('Extension: Rotating proxy is configured, skipping individual proxy loading');
+		console.log(`Extension: Using rotating proxy: ${config.ROTATING_PROXY}`);
+		return;
+	}
+	
+	// Load individual proxies from PROXY_SERVERS environment variable
+	const proxyServersEnv = process.env.PROXY_SERVERS;
+	if (!proxyServersEnv) {
+		console.log('Extension: No PROXY_SERVERS environment variable found');
+		return;
+	}
+	
+	const proxyUrls = proxyServersEnv.split(',').map(url => url.trim()).filter(url => url.length > 0);
+	if (proxyUrls.length === 0) {
+		console.log('Extension: No valid proxy URLs found in PROXY_SERVERS');
+		return;
+	}
+	
+	console.log(`Extension: Loading ${proxyUrls.length} proxies from environment variables`);
+	
+	// Add each proxy to the pool
+	for (const proxyUrl of proxyUrls) {
+		try {
+			const proxyId = await proxyPoolManager.addProxy(proxyUrl);
+			console.log(`Extension: Added proxy ${proxyUrl} (ID: ${proxyId})`);
+		} catch (error) {
+			console.error(`Extension: Failed to add proxy ${proxyUrl}:`, error);
+		}
+	}
+}
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -58,15 +126,89 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.window.showWarningMessage('No API keys found. Please run "Gemini: Add API Key" command to add keys.');
 	}
 
-	// 傳遞 eventManager 和 context 給 ApiKeyManager
+	// Initialize proxy configuration manager
+	const proxyConfigurationManager = new ProxyConfigurationManager(context);
+	await proxyConfigurationManager.migrateLegacyConfiguration();
+	const proxyConfig = await proxyConfigurationManager.loadConfiguration();
+
+	// Initialize rotating proxy health monitor
+	const rotatingProxyHealthMonitor = new RotatingProxyHealthMonitor(proxyConfigurationManager);
+	
+	// Start health monitoring if rotating proxy is enabled
+	if (config.USE_ROTATING_PROXY && config.ROTATING_PROXY) {
+		console.log('Extension: Starting rotating proxy health monitoring');
+		rotatingProxyHealthMonitor.startMonitoring();
+		
+		// Initialize UI service with health monitor
+		rotatingProxyUIService.initialize(rotatingProxyHealthMonitor);
+	}
+	
+	// Initialize proxy management components
+	proxyPoolManager = new ProxyPoolManager(eventManager, context);
+	proxyPoolManager.setHealthCheckConfig(
+		proxyConfig.healthCheckInterval,
+		proxyConfig.maxErrorsBeforeDisable
+	);
+	await proxyPoolManager.initialize();
+	
+	const proxyLoadBalancer = new ProxyLoadBalancer(proxyConfig.loadBalancingStrategy);
+	
+	const proxyAssignmentManager = new ProxyAssignmentManager(
+	  eventManager,
+	  proxyPoolManager,
+	  context
+	);
+	proxyAssignmentManager.setAutoAssignment(proxyConfig.autoAssignmentEnabled);
+	await proxyAssignmentManager.initialize();
+	
+	// Initialize proxy error handler
+	const proxyErrorHandler = new ProxyErrorHandler(
+		eventManager,
+		proxyPoolManager,
+		proxyAssignmentManager
+	);
+	
+	// Initialize performance monitor
+	const proxyPerformanceMonitor = new ProxyPerformanceMonitor(eventManager);
+	
+	// Initialize migration manager and perform migration if needed
+	const migrationManager = new MigrationManager(
+		context,
+		eventManager,
+		proxyPoolManager,
+		proxyAssignmentManager,
+		proxyConfigurationManager
+	);
+
+	// Store health monitor in context for access by other components
+	(context as any).rotatingProxyHealthMonitor = rotatingProxyHealthMonitor;
+	
+	// Check if migration is needed and perform it
+	const migrationNeeded = await migrationManager.isMigrationNeeded();
+	if (migrationNeeded) {
+		console.log('Extension: Legacy proxy configuration detected, performing migration...');
+		await migrationManager.performMigration();
+	}
+	
+	// Load proxies from environment variables if rotating proxy is not configured
+	await loadProxiesFromEnvironment(proxyPoolManager);
+	
+	// 傳遞 eventManager, context 和 proxy 管理組件給 ApiKeyManager
 	apiKeyManager = new ApiKeyManager(
 	  initialApiKeys,
 	  eventManager,
-	  context
-	); // 傳遞 context
+	  context,
+	  proxyPoolManager,
+	  proxyAssignmentManager,
+	  proxyLoadBalancer
+	);
 	await apiKeyManager.loadKeys(initialApiKeys); // 確保在啟動時載入持久化狀態
 
 	const googleApiForwarder = new GoogleApiForwarder();
+	
+	// Connect health monitor to GoogleApiForwarder
+	googleApiForwarder.setHealthMonitor(rotatingProxyHealthMonitor);
+	
 	const streamHandler = new StreamHandler();
 	const requestDispatcher = new RequestDispatcher(apiKeyManager);
 
@@ -91,7 +233,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	server.listen(port, () => {
 		console.log(`Proxy server is running on port ${port}`);
 		vscode.window.showInformationMessage(`API Key Aggregator Proxy Server started on port ${port}`);
-	}).on('error', (err: any) => {
+	}).on('error', (err: { code?: string; message?: string }) => {
 		if (err.code === 'EADDRINUSE') {
 			console.warn(`Port ${port} is already in use. Proxy server may be running in another VS Code window.`);
 			vscode.window.showInformationMessage(`API Key Aggregator Proxy Server is already running on port ${port} in another VS Code window.`);
@@ -116,6 +258,71 @@ export async function activate(context: vscode.ExtensionContext) {
 	});
 
 	// --- End Proxy Server Integration ---
+
+	// --- Initialize Native UI Components ---
+	console.log('Extension: Initializing native UI components...');
+	
+	// Create core integration service
+	coreIntegrationService = createCoreIntegrationService(
+		eventManager,
+		apiKeyManager,
+		proxyPoolManager,
+		proxyAssignmentManager
+	);
+	coreIntegrationService.initialize();
+	
+	// Initialize TreeView providers
+	apiKeyTreeProvider = new ApiKeyTreeProvider();
+	proxyTreeProvider = new ProxyTreeProvider();
+	
+	// Register TreeViews
+	const apiKeyTreeView = vscode.window.createTreeView('geminiAggregator.apiKeys', {
+		treeDataProvider: apiKeyTreeProvider,
+		showCollapseAll: true
+	});
+	
+	const proxyTreeView = vscode.window.createTreeView('geminiAggregator.proxies', {
+		treeDataProvider: proxyTreeProvider,
+		showCollapseAll: true
+	});
+	
+	// Initialize command handlers
+	apiKeyCommands = new ApiKeyCommands(coreIntegrationService);
+	proxyCommands = new ProxyCommands(proxyPoolManager, proxyAssignmentManager);
+	serverCommands = new ServerCommands();
+	
+	// Register all commands
+	apiKeyCommands.registerCommands(context);
+	proxyCommands.registerCommands(context);
+	serverCommands.registerCommands(context);
+	
+	// Initialize and show status bar
+	statusBarManager.show();
+	
+	// Start system monitoring
+	systemMonitor.startMonitoring();
+	
+	// Register UI components with disposal manager
+	disposalManager.register(apiKeyTreeView);
+	disposalManager.register(proxyTreeView);
+	disposalManager.register(coreIntegrationService);
+	disposalManager.register(statusBarManager);
+	disposalManager.register(systemMonitor);
+	
+	// Register cleanup tasks
+	disposalManager.registerCleanupTask(() => {
+		if (apiKeyCommands) apiKeyCommands.dispose();
+		if (proxyCommands) proxyCommands.dispose();
+		if (serverCommands) serverCommands.dispose();
+		if (apiKeyTreeProvider) apiKeyTreeProvider.dispose();
+		if (proxyTreeProvider) proxyTreeProvider.dispose();
+	});
+	
+	// Add disposal manager to context subscriptions
+	context.subscriptions.push(disposalManager);
+	
+	console.log('Extension: Native UI components initialized successfully');
+	// --- End Native UI Components ---
 
 	// Example command from the template (can be removed later)
 console.log('Roo: Before registering runserver command');
@@ -401,22 +608,6 @@ console.log('Roo: After registering runserver command');
 		panel.webview.onDidReceiveMessage(
 			async message => {
 				switch (message.command) {
-					// case 'getGlobalState':
-					// 	const value = context.globalState.get(message.key);
-					// 	panel.webview.postMessage({ command: 'globalStateValue', key: message.key, value: value });
-					// 	return;
-					// case 'updateGlobalState':
-					// 	await context.globalState.update(message.key, message.value);
-					// 	vscode.window.showInformationMessage(`Global State 已更新: ${message.key} = ${message.value}`);
-					// 	return;
-					// case 'executeCommand':
-					// 	try {
-					// 		const result = await vscode.commands.executeCommand(message.commandName, ...(message.args || []));
-					// 		panel.webview.postMessage({ command: 'commandResult', result: result, success: true });
-					// 	} catch (error: any) {
-					// 		panel.webview.postMessage({ command: 'commandResult', error: error.message, success: false });
-					// 	}
-					// 	return;
 					case 'getApiKeys(request)':
 						// 獲取所有 API Keys 的當前狀態並發送到 Webview
 						const allKeys = await apiKeyManager.getAllKeys();
@@ -424,6 +615,214 @@ console.log('Roo: After registering runserver command');
 							command: "getApiKeys(response)",
 							keys: allKeys,
 						});
+						return;
+					case 'getProxies(request)':
+						// Get proxies from ProxyPoolManager instead of legacy storage
+						const availableProxies = proxyPoolManager?.getAllProxies() || [];
+						panel.webview.postMessage({
+							command: "getProxies(response)",
+							proxies: availableProxies,
+						});
+						return;
+					case 'getProxyAssignments(request)':
+						// Get proxy assignments from ProxyAssignmentManager
+						const assignments = proxyAssignmentManager.getAllAssignments();
+						panel.webview.postMessage({
+							command: "getProxyAssignments(response)",
+							assignments: assignments,
+						});
+						return;
+					case 'addProxy':
+						try {
+							if (!proxyPoolManager) {
+								throw new Error('Proxy pool manager not initialized');
+							}
+							const proxyId = await proxyPoolManager.addProxy(message.url);
+							panel.webview.postMessage({
+								command: "addProxy(response)",
+								success: true,
+								proxyId: proxyId,
+							});
+							vscode.window.showInformationMessage(`Proxy added successfully: ${message.url}`);
+						} catch (error) {
+							const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+							panel.webview.postMessage({
+								command: "addProxy(response)",
+								success: false,
+								error: errorMessage,
+							});
+							vscode.window.showErrorMessage(`Failed to add proxy: ${errorMessage}`);
+							proxyErrorHandler.handleProxyError('unknown', error as Error);
+						}
+						return;
+					case 'removeProxy':
+						try {
+							if (!proxyPoolManager) {
+								throw new Error('Proxy pool manager not initialized');
+							}
+							await proxyPoolManager.removeProxy(message.proxyId);
+							panel.webview.postMessage({
+								command: "removeProxy(response)",
+								success: true,
+							});
+							vscode.window.showInformationMessage(`Proxy removed successfully`);
+						} catch (error) {
+							const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+							panel.webview.postMessage({
+								command: "removeProxy(response)",
+								success: false,
+								error: errorMessage,
+							});
+							vscode.window.showErrorMessage(`Failed to remove proxy: ${errorMessage}`);
+						}
+						return;
+					case 'updateProxy':
+						try {
+							if (!proxyPoolManager) {
+								throw new Error('Proxy pool manager not initialized');
+							}
+							await proxyPoolManager.updateProxy(message.proxyId, message.url);
+							panel.webview.postMessage({
+								command: "updateProxy(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "updateProxy(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					case 'assignProxy':
+						try {
+							await proxyAssignmentManager.assignProxyToKey(message.keyId, message.proxyId, message.isManual);
+							panel.webview.postMessage({
+								command: "assignProxy(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "assignProxy(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					case 'unassignProxy':
+						try {
+							await proxyAssignmentManager.unassignProxy(message.keyId);
+							panel.webview.postMessage({
+								command: "unassignProxy(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "unassignProxy(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					case 'rebalanceProxies':
+						try {
+							await proxyAssignmentManager.rebalanceAssignments();
+							panel.webview.postMessage({
+								command: "rebalanceProxies(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "rebalanceProxies(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					// Legacy handlers for backward compatibility
+					case 'updateProxies':
+						// Convert legacy proxies to new proxy system
+						try {
+							if (!proxyPoolManager) {
+								throw new Error('Proxy pool manager not initialized');
+							}
+							// First, clear existing proxies that aren't in the new list
+							const existingProxies = proxyPoolManager.getAllProxies();
+							for (const proxy of existingProxies) {
+								if (proxy.assignedKeyCount === 0 && !message.proxies.includes(proxy.url)) {
+									await proxyPoolManager.removeProxy(proxy.id);
+								}
+							}
+							
+							// Then add new proxies
+							for (const proxyUrl of message.proxies) {
+								const existingProxy = existingProxies.find(p => p.url === proxyUrl);
+								if (!existingProxy) {
+									await proxyPoolManager.addProxy(proxyUrl);
+								}
+							}
+							
+							// For backward compatibility, still store in legacy format
+							await context.secrets.store("geminiProxies", JSON.stringify(message.proxies));
+							apiKeyManager.setProxies(message.proxies);
+							
+							panel.webview.postMessage({
+								command: "updateProxies(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "updateProxies(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					case 'updateApiKeyProxy':
+						try {
+							if (!proxyPoolManager) {
+								throw new Error('Proxy pool manager not initialized');
+							}
+							// First, find if there's an existing proxy with this URL
+							const existingProxies = proxyPoolManager.getAllProxies();
+							let proxyId: string | undefined;
+							
+							const existingProxy = existingProxies.find(p => p.url === message.proxy);
+							if (existingProxy) {
+								proxyId = existingProxy.id;
+							} else if (message.proxy) {
+								// Create a new proxy if needed
+								proxyId = await proxyPoolManager.addProxy(message.proxy);
+							}
+							
+							// Assign or unassign the proxy
+							if (proxyId) {
+								await proxyAssignmentManager.assignProxyToKey(message.keyId, proxyId, true);
+							} else {
+								await proxyAssignmentManager.unassignProxy(message.keyId);
+							}
+							
+							// For backward compatibility
+							await apiKeyManager.updateApiKeyProxy(message.keyId, message.proxy);
+							
+							panel.webview.postMessage({
+								command: "updateApiKeyProxy(response)",
+								success: true,
+							});
+						} catch (error) {
+							panel.webview.postMessage({
+								command: "updateApiKeyProxy(response)",
+								success: false,
+								error: error instanceof Error ? error.message : 'Unknown error',
+							});
+						}
+						return;
+					case 'updateRotatingProxy':
+						apiKeyManager.setRotatingProxy(message.isRotatingProxy);
+						// If rotating proxy is enabled, disable auto-assignment
+						if (message.isRotatingProxy) {
+							proxyAssignmentManager.setAutoAssignment(false);
+						}
 						return;
 				}
 			},
@@ -478,7 +877,56 @@ function getNonce() {
 }
 
 // This method is called when your extension is deactivated
-export function deactivate() {
+export async function deactivate() {
 	console.log('Your extension "api-key-aggregetor" is being deactivated.');
+	
+	// Use disposal manager for comprehensive cleanup
+	try {
+		await disposalManager.dispose();
+		console.log('All UI components disposed successfully via DisposalManager.');
+	} catch (error) {
+		console.error('Error disposing UI components via DisposalManager:', error);
+	}
+	
+	// Clean up rotating proxy services
+	try {
+		rotatingProxyUIService.stop();
+		console.log('Rotating proxy UI service stopped successfully.');
+	} catch (error) {
+		console.error('Error stopping rotating proxy UI service:', error);
+	}
+
+	const healthMonitor = (context as any)?.rotatingProxyHealthMonitor;
+	if (healthMonitor) {
+		try {
+			healthMonitor.stopMonitoring();
+			console.log('Rotating proxy health monitor stopped successfully.');
+		} catch (error) {
+			console.error('Error stopping rotating proxy health monitor:', error);
+		}
+	}
+
+	// Clean up proxy resources
+	if (proxyPoolManager) {
+		try {
+			proxyPoolManager.dispose();
+			console.log('Proxy pool manager disposed successfully.');
+		} catch (error) {
+			console.error('Error disposing proxy pool manager:', error);
+		}
+	}
+	
+	// Close webview panel if open
+	if (webviewPanel) {
+		try {
+			webviewPanel.dispose();
+			webviewPanel = undefined;
+			console.log('Webview panel disposed successfully.');
+		} catch (error) {
+			console.error('Error disposing webview panel:', error);
+		}
+	}
+	
 	// The server is closed via context.subscriptions.dispose
+	console.log('Extension deactivation completed.');
 }

@@ -29,4 +29,16 @@ export interface ApiKeyStatus {
    * 當前使用此 Key 處理的並發請求數
    */
   currentRequests?: number;
+  /**
+   * 代理服务器地址 (Legacy field)
+   */
+  proxy?: string;
+  /**
+   * ID of the assigned proxy server from the proxy pool
+   */
+  assignedProxyId?: string;
+  /**
+   * Timestamp when the proxy was assigned
+   */
+  proxyAssignedAt?: number;
 }

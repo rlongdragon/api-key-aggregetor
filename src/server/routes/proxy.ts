@@ -4,7 +4,7 @@ import RequestDispatcher from '../core/RequestDispatcher';
 import GoogleApiForwarder, { GoogleApiError } from '../core/GoogleApiForwarder';
 import { StreamHandler } from '../core/StreamHandler';
 import config from '../config';
-import { GenerateContentResponse } from '@google/generative-ai';
+// Removed import of GenerateContentResponse as we're now using @google/genai
 import { eventManager, RequestStatus, EventManager } from "../core/EventManager"; // 引入 eventManager, RequestStatus 和 EventManager
 
 // 修改为导出一个函数，接受依赖作为参数
@@ -194,11 +194,11 @@ export default function createProxyRouter(
          eventManager.emitRequestUpdate(requestStatus); // 發送失敗狀態
       }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       // 捕获其他潜在错误 (如 KeyManager 或 Dispatcher 错误)
       requestStatus.status = 'failed';
       requestStatus.endTime = Date.now();
-      requestStatus.errorMessage = error.message || 'Unknown error';
+      requestStatus.errorMessage = (error as any).message || 'Unknown error';
       eventManager.emitRequestUpdate(requestStatus); // 發送失敗狀態
       console.error('ProxyRoute: 处理请求时发生未捕获的错误:', error);
       next(error); // 传递给错误处理中间件

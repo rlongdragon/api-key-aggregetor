@@ -1,5 +1,4 @@
 import { Response } from 'express';
-import { GenerateContentResponse } from '@google/generative-ai'; // 导入 GenerateContentResponse 类型
 
 /**
  * 处理 Google API 的流式响应，并实时转发给客户端。
@@ -11,7 +10,7 @@ export class StreamHandler {
    * @param googleStream 从 Google API 收到的响应流 (AsyncIterable)。
    * @param clientResponse 发送给客户端的 Express 响应对象。
    */
-  public async handleStream(googleStream: AsyncIterable<GenerateContentResponse>, clientResponse: Response): Promise<void> {
+  public async handleStream(googleStream: AsyncIterable<unknown>, clientResponse: Response): Promise<void> {
     // 设置响应头，表明是流式响应 (Server-Sent Events)
     clientResponse.setHeader('Content-Type', 'text/event-stream');
     clientResponse.setHeader('Cache-Control', 'no-cache');
@@ -27,7 +26,7 @@ export class StreamHandler {
       }
       // 流结束
       clientResponse.end();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error processing Google API stream:', error);
       // 处理流处理过程中的错误
       if (!clientResponse.headersSent) {
@@ -37,7 +36,7 @@ export class StreamHandler {
             code: 500,
             message: 'Stream processing error.',
             status: 'INTERNAL',
-            details: error.message,
+            details: error instanceof Error ? error.message : 'Unknown error',
           },
         });
       } else {

@@ -1,0 +1,10 @@
+export { UIStateManager, uiStateManager } from './UIStateManager';
+export { UIEventManager, uiEventManager } from './UIEventManager';
+export { StatusBarManager, statusBarManager } from './StatusBarManager';
+export { NotificationService, notificationService } from './NotificationService';
+export { SystemMonitor, systemMonitor } from './SystemMonitor';
+export { ThemeService, themeService } from './ThemeService';
+export { InputManager, inputManager, ProxyConfig } from './InputManager';
+export { ValidationService, validationService, ValidationResult } from './ValidationService';
+export { CoreIntegrationService, createCoreIntegrationService } from './CoreIntegrationService';
+export { DisposalManager, disposalManager } from './DisposalManager';
